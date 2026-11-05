@@ -171,7 +171,6 @@
   }
   function start() {
     form();
-    document.addEventListener('ns-lang', function () { var v = read(); form(); fill(v); draw(); });   /* the language pack can arrive after the first drawing */
     NSStore.ready().then(function () { return Promise.all([NSStore.list('doc'), NSStore.list('biz'), NSStore.meta('gstr3b')]); }).then(function (x) {
       DOCS = x[0] || []; BIZ = x[1] || []; META = x[2] || {};
       var seen = {}, bl = [];
