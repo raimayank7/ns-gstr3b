@@ -41,7 +41,7 @@
   function sale(d) {
     var origin = d.seller && d.seller.state, pos = d.pos || d.buyer && d.buyer.state || origin, intra = !origin || !pos || origin === pos, on = taxOn(d);
     var o = { pos: pos, intra: intra, txv: 0, tax: 0, nil: 0 };
-    (d.items || []).forEach(function (it) {
+    (d.items || []).concat(B.chargeLines ? B.chargeLines(d) : []).forEach(function (it) {   /* extra charges are taxable value too */
       var q = num(it.qty), rate = num(it.rate);
       if (!it.desc && !rate) return;
       var g = rate * q, txv = r2(g - g * num(it.disc) / 100), p = on ? num(it.gst) : 0;
