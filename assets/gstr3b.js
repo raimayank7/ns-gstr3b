@@ -59,7 +59,8 @@
     var byNo = {}; mine.forEach(function (d) { if (d.type === 'invoice' && d.no) byNo[key(d.no)] = d; });
     inP.forEach(function (d) {
       var ty = d.type || 'invoice';
-      if (ty === 'invoice' || ty === 'cashmemo' || ty === 'note') {
+      var pnote = ty === 'note' && d.side === 'purchase';
+      if (ty === 'invoice' || ty === 'cashmemo' || ty === 'note' && !pnote) {
         var sign = ty === 'note' && d.kind !== 'debit' ? -1 : 1, src = ty === 'note' ? byNo[key(d.orig && d.orig.no)] || d : d;
         if (!taxOn(d)) { if (d.kind === 'supply') add(A, 'c', 'txv', sign * sale(d).nil); return; }
         var o = sale(d), sup = src.einv && src.einv.sup || '', exp = /^EXP/.test(sup) || (src.buyer && src.buyer.state) === '96' || src.pos === '96', zr = exp || /^SEZ/.test(sup);
@@ -78,9 +79,9 @@
         var tot = (d.lines || []).reduce(function (a, l) { return a + num(l.amt); }, 0), rt = r2(tot * num(d.rcmRate) / 100);
         add(A, 'd', 'txv', tot); add(A, 'd', 'cgst', r2(rt / 2)); add(A, 'd', 'sgst', r2(rt - r2(rt / 2))); add(A, 'i3', 'cgst', r2(rt / 2)); add(A, 'i3', 'sgst', r2(rt - r2(rt / 2)));
         W.push(t('g3.w.rcmv', { no: d.no }));
-      } else if (ty === 'pbill') {
-        var bt = B.itemTotals(d), sg = d.kind === 'return' ? -1 : 1;
-        if (d.noGst) { var other = d.buyer && d.buyer.state && d.seller && d.seller.state && d.buyer.state !== d.seller.state; add(A, 'x1', other ? 'inter' : 'intra', sg * bt.taxable); return; }
+      } else if (ty === 'pbill' || pnote) {   /* a note against a purchase: debit note = like a purchase return, credit note = like a bill */
+        var bt = B.itemTotals(d), sg = (pnote ? d.kind === 'debit' : d.kind === 'return') ? -1 : 1;
+        if (pnote ? d.withGst === false : d.noGst) { var other = d.buyer && d.buyer.state && d.seller && d.seller.state && d.buyer.state !== d.seller.state; add(A, 'x1', other ? 'inter' : 'intra', sg * bt.taxable); return; }
         ['igst', 'cgst', 'sgst'].forEach(function (h) { add(A, 'i5', h, sg * bt[h]); });
         if (!gstinOk(d.buyer && d.buyer.gstin)) W.push(t('g3.w.nogstin', { no: d.no || '—', p: d.buyer && d.buyer.name || '' }));
       } else if (ty === 'exp' && d.itc && num(d.gst)) {
