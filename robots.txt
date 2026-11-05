@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://gstr3b.niveshsahayak.in/sitemap.xml
