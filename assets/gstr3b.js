@@ -100,6 +100,18 @@
         else if (d.itc) { if (d.inter) add(A, 'i5', 'igst', fg); else { add(A, 'i5', 'cgst', half); add(A, 'i5', 'sgst', r2(fg - half)); } W.push(t('fx.g3_cg', { no: d.no || d.name || '' })); }
       }
     });
+    /* GST on advances for services (round C): tax on an advance received this period is due now (3.1(a)); when a bill or refund uses an
+       advance, the tax already paid comes off (the bill itself is in 3.1(a) in full). Same matching as the books (NSBooks.advAdjust). */
+    if (B.advTax) {
+      var advIn = 0;
+      inP.forEach(function (d) {
+        var a = B.advTax(d); if (!a) return; advIn++;
+        add(A, 'a', 'txv', a.taxable); add(A, 'a', 'igst', a.igst); add(A, 'a', 'cgst', a.cgst); add(A, 'a', 'sgst', a.sgst);
+      });
+      var adj = B.advAdjust(mine, bz).filter(function (x) { return x.date >= P.from && x.date <= P.to; });
+      adj.forEach(function (x) { add(A, 'a', 'txv', -x.taxable); add(A, 'a', 'igst', -x.igst); add(A, 'a', 'cgst', -x.cgst); add(A, 'a', 'sgst', -x.sgst); });
+      if (advIn || adj.length) W.push(t('g3.w.adv', { n: advIn, m: adj.length }));
+    }
     if (A.i5.igst || A.i5.cgst || A.i5.sgst) W.push(t('g3.w.2b'));
     return { A: A, W: W, seller: seller, s32: Object.keys(s32).map(function (k) { return s32[k]; }).filter(function (s) { return s.txv; }) };
   }
