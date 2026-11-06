@@ -6,7 +6,10 @@
    Credit carried forward (user test 2026-11-06): box 'ITC balance brought forward' = the credit left after every earlier period,
    worked period by period from the typed opening balance (meta gstr3b 'open|<business>' = { m: 'YYYY-MM', igst, cgst, sgst, cess })
    or from the first month with saved bills; a saved working of an earlier period counts as saved, its own brought-forward box only
-   when it was typed. Capital goods (App › Fixed assets, ITC ticked) are in 4A(5); a fixed asset sold with GST is in 3.1(a). */
+   when it was typed. Capital goods (App › Fixed assets, ITC ticked) are in 4A(5); a fixed asset sold with GST is in 3.1(a).
+   Set-off into the books (Accounts coverage WP-4, after filing): "Post set-off to my accounts" saves one 'gstset' record per
+   business and period (books.js gstSet): output tax settled by the credit used and the electronic cash ledger, reverse charge,
+   interest and late fee from the cash ledger; the user confirms the amounts once, posting again replaces it. */
 (function () {
   'use strict';
   var $ = NS.$, $$ = NS.$$, esc = NS.esc, num = NS.num, r2 = NS.r2, t = NS.t, money = NS.money, B = window.NSBooks;
@@ -208,6 +211,42 @@
     $('#g3-boxes').innerHTML = GROUPS.map(function (g) { return '<b>' + esc(t(g[0])) + '</b>: ' + g[1].map(function (id) { var b = BOX.filter(function (z) { return z[0] === id; })[0]; return esc(t('g3.b.' + id)) + ' ' + b[1].map(function (hh) { return m(V[id][hh]); }).join(' / '); }).join('; '); }).join('<br>');
   }
   function ident() { return $('#g3-biz').value + '|' + period().id; }
+  /* ---------- set-off into the books (WP-4) ---------- */
+  var UTS = { '04': 1, '26': 1, '31': 1, '35': 1, '38': 1 };
+  function iso(dt) { return dt.getFullYear() + '-' + ('0' + (dt.getMonth() + 1)).slice(-2) + '-' + ('0' + dt.getDate()).slice(-2); }
+  function postedOf(bz, P) { return DOCS.filter(function (d) { return d.type === 'gstset' && d.per === P.id && key(d.seller && d.seller.name) === bz; })[0]; }
+  function showPosted() {
+    var el = $('#g3-posted'), bz = $('#g3-biz').value; if (!el) return;
+    var P = period(), p = bz && postedOf(bz, P);
+    el.textContent = p ? t('ax.posted', { p: P.label, d: NS.fmtDate ? NS.fmtDate(p.date) : p.date }) : '';
+  }
+  function postSetoff() {
+    var bz = $('#g3-biz').value; if (!bz) { NS.toast(t('g3.nobiz'), 'bad'); return; }
+    var P = period(), x = setoff(read()), sl = BIZ.filter(function (b) { return key(b.name) === bz; })[0] || SELLER || { name: bz };
+    var seller = JSON.parse(JSON.stringify(sl)); delete seller.id; delete seller.created; delete seller.updated;
+    var dueD = P.q ? new Date(P.y, P.to_m, D22[seller.state] ? 22 : 24) : new Date(P.y, P.to_m, 20), today = NS.today();
+    var date = today < P.to ? P.to : today > iso(dueD) ? iso(dueD) : today;
+    var h3 = ['igst', 'cgst', 'sgst'], sum = function (o) { return r2(h3.reduce(function (s, h) { return s + (o && o[h] || 0); }, 0)); };
+    var cr = r2(h3.reduce(function (s, h) { return s + Object.keys(x.use[h] || {}).reduce(function (a, f) { return a + (f === 'cess' ? 0 : x.use[h][f]); }, 0); }, 0));
+    var cash = {}, rcm = {}, inn = {}, fee = {};
+    h3.forEach(function (h) { cash[h] = r2(Math.max(0, x.left[h])); rcm[h] = r2(x.rcm[h] || 0); inn[h] = r2(V['int'][h] || 0); fee[h] = r2(V.fee[h] || 0); });
+    var out = r2(cr + sum(cash));
+    if (!out && !sum(rcm) && !sum(inn) && !sum(fee)) { NS.toast(t('ax.postnone'), 'bad'); return; }
+    var msg = t('ax.postq', { p: P.label, d: NS.fmtDate ? NS.fmtDate(date) : date, o: m(out), c: m(cr), k: m(sum(cash)), r: m(sum(rcm)), f: m(r2(sum(inn) + sum(fee))) }) +
+      (x.L.cess || x.rcm.cess ? ' ' + t('ax.nocess') : '');
+    (NS.ask ? NS.ask(msg) : Promise.resolve(window.confirm(msg))).then(function (yes) {
+      if (!yes) return;
+      var old = postedOf(bz, P);
+      var d = Object.assign(old ? { id: old.id, created: old.created } : {}, { type: 'gstset', no: 'GSTR-3B ' + P.id, date: date, seller: seller, per: P.id, label: P.label, ut: !!UTS[seller.state],
+        use: { igst: x.use.igst, cgst: x.use.cgst, sgst: x.use.sgst }, cash: cash, rcm: rcm, 'int': inn, fee: fee });
+      d.total = r2(out + sum(rcm) + sum(inn) + sum(fee));
+      d.narr = 'GSTR-3B set-off for ' + P.label;
+      return NSStore.put('doc', d).then(function (s) {
+        DOCS = DOCS.filter(function (z) { return z.id !== (s && s.id || d.id); }).concat([s || d]);
+        NS.toast(t('ax.postok')); showPosted();
+      });
+    }).catch(function () { NS.toast(t('g1.fail'), 'bad'); });
+  }
   function load(fresh) {
     fromBills();
     var saved = !fresh && META[ident()];
@@ -220,6 +259,11 @@
   }
   function start() {
     form();
+    /* WP-4: the set-off button next to Save, and a line saying whether this period is in the books */
+    var sv0 = $('[data-do="save"]');
+    if (sv0 && !$('[data-do="post"]')) sv0.insertAdjacentHTML('afterend', '<button type="button" class="btn" data-do="post" data-i18n="ax.post">' + esc(t('ax.post')) + '</button>');   /* data-i18n: the language pack may arrive after this */
+    var sd0 = $('#g3-saved'); if (sd0 && !$('#g3-posted')) sd0.insertAdjacentHTML('afterend', '<p class="soft" id="g3-posted" aria-live="polite"></p>');
+    document.addEventListener('ns-lang', function () { var b = $('[data-do="post"]'); if (b) b.textContent = t('ax.post'); showPosted(); });
     document.addEventListener('ns-lang', function () { var v = read(); form(); fill(v); drawOpen(); draw(); });   /* the language pack can arrive after the first drawing */
     NSStore.ready().then(function () { return Promise.all([NSStore.list('doc'), NSStore.list('biz'), NSStore.meta('gstr3b')]); }).then(function (x) {
       DOCS = x[0] || []; BIZ = x[1] || []; META = x[2] || {};
@@ -232,9 +276,9 @@
       if (sv.biz && bl.some(function (b) { return b[0] === sv.biz; })) $('#g3-biz').value = sv.biz;
       if (sv.p) $('#g3-ptype').value = sv.p;
       $('#g3-status').textContent = t(NSStore.mode() === 'vault' ? 'g1.vault' : 'g1.local', { n: DOCS.length });
-      load();
+      load(); showPosted();
     }).catch(function () { $('#g3-status').textContent = t('g1.fail'); });
-    root.addEventListener('change', function (e) { if (e.target.closest('.g1-ctl')) load(); });
+    root.addEventListener('change', function (e) { if (e.target.closest('.g1-ctl')) { load(); showPosted(); } });
     root.addEventListener('input', function (e) { if (e.target.matches('#g3-form input[data-b]')) { e.target.classList.add('typed'); draw(); } });
     root.addEventListener('click', function (e) {
       var b = e.target.closest('button'); if (!b) return;
@@ -246,6 +290,7 @@
         if (mo) META['open|' + bz] = o; else delete META['open|' + bz];
         NSStore.meta('gstr3b', META).then(function () { NS.toast(t('g3.saved')); load(); });
       }
+      else if (d === 'post') postSetoff();
       else if (d === 'save') { META[ident()] = { v: read(), at: Date.now(), cfTyped: !!$$('#g3-form input[data-b="cf"].typed').length }; NSStore.meta('gstr3b', META).then(function () { NS.toast(t('g3.saved')); $('#g3-saved').textContent = t('g3.loaded', { d: new Date().toLocaleString('en-IN') }); }); }
       else if (d === 'print') window.print();
       else if (d === 'share') NS.sharePdf([$('#g3-out')], 'GSTR-3B ' + ((SELLER && SELLER.gstin) || '') + ' ' + period().label, 'a4', 'GSTR-3B ' + period().label, 'GSTR-3B working ' + period().label);
