@@ -46,15 +46,16 @@
   /* tax of a sale by rate, same rules as docs.js */
   function sale(d) {
     var origin = d.seller && d.seller.state, pos = d.pos || d.buyer && d.buyer.state || origin, intra = !origin || !pos || origin === pos, on = taxOn(d);
-    var o = { pos: pos, intra: intra, txv: 0, tax: 0, nil: 0 };
+    var o = { pos: pos, intra: intra, txv: 0, tax: 0, nil: 0, cgst: 0, sgst: 0 };
     (d.items || []).concat(B.chargeLines ? B.chargeLines(d) : []).forEach(function (it) {   /* extra charges are taxable value too */
       var q = num(it.qty), rate = num(it.rate);
       if (!it.desc && !rate) return;
       var g = rate * q, txv = r2(g - g * num(it.disc) / 100), p = on ? num(it.gst) : 0;
       if (!p) { o.nil += txv; return; }
-      o.txv += txv; o.tax += r2(txv * p / 100);
+      var lt = r2(txv * p / 100); if (intra) { lt = r2(r2(lt / 2) * 2); o.cgst += lt / 2; o.sgst += lt / 2; }
+      o.txv += txv; o.tax += lt;
     });
-    o.igst = intra ? 0 : r2(o.tax); o.cgst = intra ? r2(o.tax / 2) : 0; o.sgst = intra ? r2(o.tax / 2) : 0;
+    o.igst = intra ? 0 : r2(o.tax); o.cgst = intra ? r2(o.cgst) : 0; o.sgst = intra ? r2(o.sgst) : 0;
     return o;
   }
   function nextOf(P) { var d = new Date(Date.UTC(+P.to.slice(0, 4), +P.to.slice(5, 7), 1)); return periodOf(d.toISOString().slice(0, 7), P.q); }
@@ -72,10 +73,10 @@
         if (!taxOn(d)) { if (d.kind === 'supply') add(A, 'c', 'txv', sign * sale(d).nil); return; }
         var o = sale(d), sup = src.einv && src.einv.sup || '', exp = /^EXP/.test(sup) || (src.buyer && src.buyer.state) === '96' || src.pos === '96', zr = exp || /^SEZ/.test(sup);
         var box = zr ? 'b' : 'a';
-        add(A, box, 'txv', sign * o.txv); add(A, box, 'igst', sign * o.igst);
+        add(A, box, 'txv', sign * (o.txv + (zr ? o.nil : 0))); add(A, box, 'igst', sign * o.igst);   /* LUT export / SEZ: its 0 % lines are zero rated too */
         if (box === 'a') { add(A, 'a', 'cgst', sign * o.cgst); add(A, 'a', 'sgst', sign * o.sgst); }
         else if (o.cgst) W.push(t('g3.w.zr', { no: d.no }));
-        add(A, 'c', 'txv', sign * o.nil);
+        if (!zr) add(A, 'c', 'txv', sign * o.nil);
         if (!zr && !o.intra && !gstinOk(d.buyer && d.buyer.gstin)) {   /* 3.2: inter-state supplies to unregistered persons */
           var s = s32[o.pos] || (s32[o.pos] = { pos: o.pos, txv: 0, igst: 0 }); s.txv = r2(s.txv + sign * o.txv); s.igst = r2(s.igst + sign * o.igst);
         }
@@ -278,7 +279,7 @@
     document.addEventListener('ns-lang', function () { var b = $('[data-do="post"]'); if (b) b.textContent = t('ax.post'); showPosted(); });
     document.addEventListener('ns-lang', function () { var v = read(); form(); fill(v); drawOpen(); draw(); });   /* the language pack can arrive after the first drawing */
     NSStore.ready().then(function () { return Promise.all([NSStore.list('doc'), NSStore.list('biz'), NSStore.meta('gstr3b')]); }).then(function (x) {
-      DOCS = x[0] || []; BIZ = x[1] || []; META = x[2] || {};
+      DOCS = (x[0] || []).map(function (d) { return window.NSBooks && NSBooks.asInvoice ? NSBooks.asInvoice(d) : d; });   /* export invoices (F3-10) */ BIZ = x[1] || []; META = x[2] || {};
       var seen = {}, bl = [];
       BIZ.concat(DOCS.map(function (d) { return d.seller; })).forEach(function (s) { var k = key(s && s.name); if (k && !seen[k]) { seen[k] = 1; bl.push([k, s.name + (s.gstin ? ' (' + s.gstin + ')' : '')]); } });
       $('#g3-biz').innerHTML = bl.length ? bl.map(function (b) { return '<option value="' + esc(b[0]) + '">' + esc(b[1]) + '</option>'; }).join('') : '<option value="">' + esc(t('g3.nobiz')) + '</option>';
