@@ -288,6 +288,209 @@
     h += G.verify() + G.note('Prepared in NSBiz from your saved bills and the boxes above. File the return on the GST portal (Returns › GSTR-3B); the portal fills some tables itself from GSTR-1 and GSTR-2B.');
     return G.wrap(h);
   }
+  /* the return as a JSON file for Returns › GSTR-3B › Prepare Offline › Upload on the GST portal: same field names, order and
+     rounding as the department's GSTR-3B Offline Utility (Excel) writes (ret_period = MMYYYY of the last month of the period) */
+  function portalJson(V, P) {
+    var a2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+    var t5 = function (o) { o = o || {}; return { txval: a2(o.txv), iamt: a2(o.igst), camt: a2(o.cgst), samt: a2(o.sgst), csamt: a2(o.cess) }; };
+    var t4 = function (o, ty) { o = o || {}; var r = { iamt: a2(o.igst), camt: a2(o.cgst), samt: a2(o.sgst), csamt: a2(o.cess) }; return ty ? Object.assign({ ty: ty }, r) : r; };
+    var net = {}; ['igst', 'cgst', 'sgst', 'cess'].forEach(function (k) { net[k] = ['i1', 'i2', 'i3', 'i4', 'i5'].reduce(function (x, b) { return x + ((V[b] || {})[k] || 0); }, 0) - ((V.r1 || {})[k] || 0) - ((V.r2 || {})[k] || 0); });
+    var b = V.b || {}, c = V.c || {}, e = V.e || {}, x1 = V.x1 || {}, x2 = V.x2 || {}, fee = V.fee || {};
+    return {
+      gstin: (SELLER && SELLER.gstin || '').toUpperCase(),
+      ret_period: ('0' + P.to_m).slice(-2) + P.y,
+      sup_details: { osup_det: t5(V.a), osup_zero: { txval: a2(b.txv), iamt: a2(b.igst), csamt: a2(b.cess) }, osup_nil_exmp: { txval: a2(c.txv) }, isup_rev: t5(V.d), osup_nongst: { txval: a2(e.txv) } },
+      eco_dtls: { eco_sup: { txval: 0, iamt: 0, camt: 0, samt: 0, csamt: 0 }, eco_reg_sup: { txval: 0 } },
+      inter_sup: { unreg_details: S32.filter(function (z) { return z.txv || z.igst; }).map(function (z) { return { pos: String(z.pos).padStart(2, '0'), txval: a2(z.txv), iamt: a2(z.igst) }; }), comp_details: [], uin_details: [] },
+      itc_elg: { itc_avl: [t4(V.i1, 'IMPG'), t4(V.i2, 'IMPS'), t4(V.i3, 'ISRC'), t4(V.i4, 'ISD'), t4(V.i5, 'OTH')], itc_rev: [t4(V.r1, 'RUL'), t4(V.r2, 'OTH')], itc_net: t4(net), itc_inelg: [t4(V.d1, 'RUL'), t4(V.d2, 'OTH')] },
+      inward_sup: { isup_details: [{ ty: 'GST', inter: a2(x1.inter), intra: a2(x1.intra) }, { ty: 'NONGST', inter: a2(x2.inter), intra: a2(x2.intra) }] },
+      intr_ltfee: { intr_details: t4(V['int']), ltfee_details: { camt: a2(fee.cgst), samt: a2(fee.sgst) } }
+    };
+  }
+  function saveJson() {
+    var v = read(), P = period(), g = (SELLER && SELLER.gstin || '').toUpperCase();
+    if (!/^\d{2}[A-Z0-9]{13}$/.test(g)) { NS.toast('Add the GSTIN of this business first (My data › Businesses): the portal needs it in the file.'); return; }
+    var j = portalJson(v, P), bl = new Blob([JSON.stringify(j)], { type: 'application/json' }), a = document.createElement('a'), u = URL.createObjectURL(bl);
+    a.href = u; a.download = g + '_GSTR3B_' + j.ret_period + '.json'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(u); }, 4000);
+    NS.toast('JSON saved. On the GST portal: Returns › GSTR-3B › Prepare Offline › Upload, then check the figures before you file.');
+  }
+  /* the department's GSTR-3B Offline Utility (Excel): NSBiz writes the figures into a copy of it, the user opens that copy,
+     presses the utility's own Validate and Generate JSON buttons and uploads as usual. Cells are found by the names the utility
+     gives its input areas, so a small change of layout does not put figures in the wrong place. */
+  var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  function fillUtility(book, v, P, seller, s32) {
+    var N = book.names, need = ['OutwardInwardSuppliesRange', 'ITCRange', 'ExemptNilRatedRange', 'InterestRange', 'InterStateSuppliesValuesRange'];
+    if (need.some(function (n) { return !N[n]; })) throw new Error('notutil');
+    return book.sheet('GSTR-3B').then(function (S) {
+      var first = function (n) { var r = N[n].map(function (x) { return +/\d+/.exec(x)[0]; }); return Math.min.apply(null, r); };
+      var g = S.label('GSTIN'), yr = S.label('Year'), mo = S.label('Month');
+      if (!g || !yr || !mo) throw new Error('notutil');
+      var right = function (ref, n) { var c = /^[A-Z]+/.exec(ref)[0], r = /\d+$/.exec(ref)[0], k = 0; for (var i = 0; i < c.length; i++) k = k * 26 + c.charCodeAt(i) - 64; k += n; var o = ''; while (k > 0) { var mm = (k - 1) % 26; o = String.fromCharCode(65 + mm) + o; k = (k - mm - 1) / 26; } return o + r; };
+      var fy = +P.from.slice(5, 7) >= 4 ? P.y + '-' + String(P.y + 1).slice(2) : (P.y - 1) + '-' + String(P.y).slice(2);
+      S.set(right(g, 1), (seller && seller.gstin || '').toUpperCase());
+      var ln = S.label('Legal name of the registered person'); if (ln) S.set(right(ln, 1), (seller && seller.gst && seller.gst.legal) || (seller && (seller.legal || seller.name)) || '');
+      S.set(right(yr, 2), fy); S.set(right(mo, 2), MONTHS[P.to_m - 1]);
+      /* empty every input cell first, as the utility's own reset does, so a file used before keeps no old figures */
+      need.forEach(function (n) { N[n].forEach(function (r) { S.clear(r); }); });
+      var o = first('OutwardInwardSuppliesRange'), b5 = ['a', 'b', 'c', 'd', 'e'], h5 = ['txv', 'igst', 'cgst', 'sgst', 'cess'], C5 = ['C', 'D', 'E', 'F', 'G'];
+      var ok = {}; N.OutwardInwardSuppliesRange.forEach(function (r) { ok[r] = 1; });
+      b5.forEach(function (b, i) { h5.forEach(function (h, j) { var ref = C5[j] + (o + i); if (ok[ref]) S.set(ref, +((v[b] || {})[h] || 0)); }); });
+      var it = first('ITCRange'), h4 = ['igst', 'cgst', 'sgst', 'cess'], C4 = ['C', 'D', 'E', 'F'], okI = {}; N.ITCRange.forEach(function (r) { okI[r] = 1; });
+      [['i1', 0], ['i2', 1], ['i3', 2], ['i4', 3], ['i5', 4], ['r1', 6], ['r2', 7], ['d1', 10], ['d2', 11]].forEach(function (x) { h4.forEach(function (h, j) { var ref = C4[j] + (it + x[1]); if (okI[ref]) S.set(ref, +((v[x[0]] || {})[h] || 0)); }); });
+      var ex = first('ExemptNilRatedRange'); S.set('D' + ex, +(v.x1 || {}).inter || 0); S.set('E' + ex, +(v.x1 || {}).intra || 0); S.set('D' + (ex + 1), +(v.x2 || {}).inter || 0); S.set('E' + (ex + 1), +(v.x2 || {}).intra || 0);
+      var ir = first('InterestRange'); h4.forEach(function (h, j) { S.set(C4[j] + ir, +((v['int'] || {})[h] || 0)); });
+      S.set('D' + (ir + 1), +((v.fee || {}).cgst || 0)); S.set('E' + (ir + 1), +((v.fee || {}).sgst || 0));
+      var st = first('InterStateSuppliesValuesRange'), last = st + Math.round(N.InterStateSuppliesValuesRange.length / 6) - 1;
+      for (var r = st; r <= last; r++) S.clear('B' + r);
+      var rows = (s32 || []).filter(function (z) { return z.txv || z.igst; });
+      if (rows.length > last - st + 1) throw new Error('toomany');
+      rows.forEach(function (z, i) { var c = String(z.pos).padStart(2, '0'); S.set('B' + (st + i), c + '-' + (UTNAME[c] || NS.stateName(c))); S.set('C' + (st + i), +z.txv || 0); S.set('D' + (st + i), +z.igst || 0); });
+      return S;
+    });
+  }
+  /* state names exactly as the utility's own list spells them, where they differ from ours */
+  var UTNAME = { '01': 'Jammu & Kashmir', '26': 'Dadra & Nagar Haveli & Daman & Diu', '35': 'Andaman & Nicobar Islands', '97': 'Other Territory' };
+  function fillUtil(own) {
+    var g = (SELLER && SELLER.gstin || '').toUpperCase(), P = period(), v = read();
+    if (!/^\d{2}[A-Z0-9]{13}$/.test(g)) { NS.toast('Add the GSTIN of this business first (My data › Businesses).'); return; }
+    if (!NS.xlFill) return;
+    var tp = null;
+    NS.xlFill.template('gstr3b', own).then(function (x) {
+      tp = x; if (!tp) return; var f = tp.file;
+      NS.toast('Filling ' + f.name + '…');
+      return NS.xlFill.open(f).then(function (book) { return fillUtility(book, v, P, SELLER, S32).then(function () { NS.xlFill.good('gstr3b', tp);
+        var nm = g + '_GSTR3B_' + MONTHS[P.to_m - 1].slice(0, 3).toUpperCase() + '-' + P.y + ' NSBiz.xlsm';
+        return book.save(nm).then(function (bl) { return NS.xlFill.toFolder(g, MONTHS[P.to_m - 1].slice(0, 3) + '-' + P.y, nm, bl); }).then(function (inF) { NS.toast('Saved as "' + nm + '".' + (inF ? ' Also saved in NSBiz › GST Returns.' : '') + ' Open it in Excel, enable macros, press Validate, then Generate JSON.'); showTpl(); });
+      }); });
+    }).catch(function (e) {
+      var w = e && e.message; if (/^(notutil|nosheet|notxl)$/.test(w)) NS.xlFill.bad('gstr3b', tp);
+      NS.toast(w === 'notzip' ? 'Choose the zip downloaded from gst.gov.in, or the Excel template inside it.' : w === 'notinzip' ? 'That zip does not hold the GSTR-3B Offline Utility. Download the GSTR3B Offline Utility from gst.gov.in › Downloads › Offline Tools.' : w === 'notutil' || w === 'nosheet' || w === 'notxl' ? 'That file is not the GSTR-3B Offline Utility (download it from gst.gov.in › Downloads › Offline Tools › GSTR3B Offline Utility).' : w === 'toomany' ? 'Table 3.2 has more states than the utility has rows.' : 'Could not fill the utility: ' + (w || e));
+    });
+  }
+  var UQC9 = { nos: 'NOS-NUMBERS', pcs: 'PCS-PIECES', kg: 'KGS-KILOGRAMS', gm: 'GMS-GRAMMES', ltr: 'LTR-LITRES', ml: 'MLT-MILILITRE', mtr: 'MTR-METERS', 'sq ft': 'SQF-SQUARE FEET',
+    box: 'BOX-BOX', pack: 'PAC-PACKS', set: 'SET-SETS', pair: 'PRS-PAIRS', dozen: 'DOZ-DOZENS', bag: 'BAG-BAGS', ton: 'TON-TONNES', bottle: 'BTL-BOTTLES', roll: 'ROL-ROLLS', 'sq m': 'SQM-SQUARE METERS', quintal: 'QTL-QUINTAL', unit: 'UNT-UNITS' };
+  /* ---------- GSTR-9, the annual return: the department's GSTR-9 Offline Tool filled for the financial year ----------
+     Every month (or quarter) of the year as this screen works it out: the saved working where it was saved, else from the bills,
+     with the credit carried from the month before; then the year's sums go into Tables 4 to 9. The B2B / B2C split, exports, SEZ
+     and notes (Tables 4 and 5) and the HSN summaries (17, 18) come from the bills. 6A1, 8A (the portal fills it from GSTR-2B),
+     10 to 16 and 4F advances are left for the person to fill. */
+  function year9(fy) {
+    var bz = $('#g3-biz').value, q = $('#g3-ptype').value === 'q', seen = {}, Y = { d: z4(), i: {}, r1: z4(), r2: z4(), blk: z4(), c: 0, e: 0, L: z4(), use: {}, left: z4(), rcm: z4(), int: z4(), fee: z4(), n: 0 };
+    ['i1', 'i2', 'i3', 'i4', 'i5'].forEach(function (b) { Y.i[b] = z4(); });
+    ['igst', 'cgst', 'sgst', 'cess'].forEach(function (h) { Y.use[h] = { igst: 0, cgst: 0, sgst: 0, cess: 0 }; });
+    for (var k = 0; k < 12; k++) {
+      var mo = 4 + k, yy = mo > 12 ? fy + 1 : fy, mm = mo > 12 ? mo - 12 : mo, P = periodOf(yy + '-' + (mm < 10 ? '0' : '') + mm, q);
+      if (seen[P.id]) continue; seen[P.id] = 1;
+      var r = bills(bz, P), sv = META[bz + '|' + P.id], v;
+      if (sv && sv.v) { v = JSON.parse(JSON.stringify(sv.v)); if (!sv.cfTyped) v.cf = Object.assign({}, v.cf, carried(bz, P).v); }
+      else { v = r.A; v.cf = Object.assign(v.cf, carried(bz, P).v); }
+      var x = setoff(v); Y.n++;
+      ['igst', 'cgst', 'sgst', 'cess'].forEach(function (h) {
+        Y.d[h] = r2(Y.d[h] + num(v.d[h])); Y.r1[h] = r2(Y.r1[h] + num(v.r1[h])); Y.r2[h] = r2(Y.r2[h] + num(v.r2[h]));
+        ['i1', 'i2', 'i3', 'i4', 'i5'].forEach(function (b) { Y.i[b][h] = r2(Y.i[b][h] + num(v[b][h])); });
+        Y.blk[h] = r2(Y.blk[h] + num(r.wk && r.wk.blk && r.wk.blk[h]));
+        Y.L[h] = r2(Y.L[h] + num(x.L[h])); Y.left[h] = r2(Y.left[h] + Math.max(0, num(x.left[h]))); Y.rcm[h] = r2(Y.rcm[h] + num(x.rcm[h]));
+        Y.int[h] = r2(Y.int[h] + num(v['int'] && v['int'][h])); Y.fee[h] = r2(Y.fee[h] + num(v.fee && v.fee[h]));
+        Object.keys(x.use[h] || {}).forEach(function (f) { Y.use[h][f] = r2(Y.use[h][f] + num(x.use[h][f])); });
+      });
+      Y.d.txv = r2((Y.d.txv || 0) + num(v.d.txv)); Y.c = r2(Y.c + num(v.c.txv)); Y.e = r2(Y.e + num(v.e.txv));
+    }
+    /* sales and notes of the year, bill by bill (Tables 4 and 5); HSN of sales and purchases (17, 18) */
+    var from = fy + '-04-01', to = (fy + 1) + '-03-31', mine = DOCS.filter(function (d) { return key(d.seller && d.seller.name) === bz && !d.cancelled && !d.deleted && d.date >= from && d.date <= to; });
+    var byNo = {}; mine.forEach(function (d) { if (d.type === 'invoice' && d.no) byNo[key(d.no)] = d; });
+    var T = {}; ['4A', '4B', '4C', '4D', '4I', '4J', '5A', '5B'].forEach(function (k2) { T[k2] = { txv: 0, cgst: 0, sgst: 0, igst: 0 }; });
+    var H17 = {}, H18 = {}, ms = String(SELLER && (SELLER.state || String(SELLER.gstin || '').slice(0, 2)) || '');
+    var hsnAdd = function (H, it, txv, g, inter) {
+      if (!it.hsn) return; var h = String(it.hsn).trim(), u = /^99/.test(h) ? 'NA' : UQC9[key(it.unit)] || 'OTH-OTHERS', kk = h + '|' + u + '|' + g;
+      var o = H[kk] || (H[kk] = { hsn: h, desc: it.desc || '', uqc: u, g: g, qty: 0, txv: 0, igst: 0, cgst: 0, sgst: 0 }), tx = r2(txv * g / 100);
+      o.qty = r2(o.qty + (u === 'NA' ? 0 : num(it.qty))); o.txv = r2(o.txv + txv); if (inter) o.igst = r2(o.igst + tx); else { o.cgst = r2(o.cgst + r2(tx / 2)); o.sgst = r2(o.sgst + tx - r2(tx / 2)); }
+    };
+    var lines = function (d) { return (d.items || []).concat(B.chargeLines ? B.chargeLines(d) : []); }, txvOf = function (it) { var g = num(it.qty) * num(it.rate); return r2(g - g * num(it.disc) / 100); };
+    var addT = function (k2, o, sg) { var t0 = T[k2]; t0.txv = r2(t0.txv + sg * o.txv); t0.cgst = r2(t0.cgst + sg * o.cgst); t0.sgst = r2(t0.sgst + sg * o.sgst); t0.igst = r2(t0.igst + sg * o.igst); };
+    var B6 = { b: [z4(), z4(), z4()], c: [z4(), z4(), z4()], dd: [z4(), z4(), z4()] };   /* inputs, capital goods, input services */
+    mine.forEach(function (d) {
+      var ty = d.type || 'invoice', pnote = ty === 'note' && d.side === 'purchase';
+      if (ty === 'invoice' || ty === 'cashmemo' || ty === 'note' && !pnote) {
+        if (!taxOn(d)) return;
+        var o = sale(d), src = ty === 'note' ? byNo[key(d.orig && d.orig.no)] || d : d, sup = src.einv && src.einv.sup || (src.buyer && src.buyer.reg === 'sez' ? 'SEZ' : '');
+        var exp = /^EXP/.test(sup) || (src.buyer && src.buyer.state) === '96' || src.pos === '96', sez = /^SEZ/.test(sup), paid = num(o.igst) > 0;
+        if (ty === 'note') addT(d.kind === 'debit' ? '4J' : '4I', o, 1);
+        else if (exp) addT(paid ? '4C' : '5A', o, 1);
+        else if (sez) addT(paid ? '4D' : '5B', o, 1);
+        else addT(/^\d{2}[A-Z0-9]{13}$/.test(String(d.buyer && d.buyer.gstin || '').trim().toUpperCase()) ? '4B' : '4A', o, 1);
+        if (ty !== 'note') { var inter = !o.intra; lines(d).forEach(function (it) { hsnAdd(H17, it, txvOf(it), num(it.gst), inter); }); }
+      } else if ((ty === 'pbill' && d.kind !== 'return' && !d.noGst) || ty === 'self') {
+        var sp = d.buyer || {}, ss = String(sp.state || String(sp.gstin || '').slice(0, 2) || ms), inter2 = !!ss && !!ms && ss !== ms;
+        lines(d).forEach(function (it) { hsnAdd(H18, it, txvOf(it), num(it.gst), inter2); });
+        var tt = B.itemTotals(d), bk = B.itcBlk ? B.itcBlk(d) : null, svc = lines(d).every(function (it) { return /^99/.test(String(it.hsn || '')); });
+        var grp = ty === 'self' ? 'c' : (d.rc || d.rcm) ? 'dd' : 'b', row = B6[grp][svc ? 2 : 0];
+        ['igst', 'cgst', 'sgst'].forEach(function (h) { row[h] = r2(row[h] + num(tt[h]) - (bk ? num(bk.blk[h]) + num(bk.inel[h]) : 0)); });
+      } else if (ty === 'fa' && d.kind !== 'sale' && d.itc && num(d.gstAmt)) {
+        var cap = B6.b[1], ga = num(d.gstAmt); if (d.inter) cap.igst = r2(cap.igst + ga); else { cap.cgst = r2(cap.cgst + r2(ga / 2)); cap.sgst = r2(cap.sgst + ga - r2(ga / 2)); }
+      }
+    });
+    Y.T = T; Y.B6 = B6; Y.H17 = Object.keys(H17).map(function (k3) { return H17[k3]; }); Y.H18 = Object.keys(H18).map(function (k3) { return H18[k3]; });
+    return Y;
+  }
+  function z4() { return { igst: 0, cgst: 0, sgst: 0, cess: 0 }; }
+  function fill9(book, fy) {
+    var need = ['Home', '4 Outward', '5 Outward', '6 ITC availed', '7 ITC Rev', '9 Tax Paid', '17 HSN Outward', '18 HSN Inward'];
+    if (need.some(function (n) { return book.sheets.indexOf(n) < 0; })) return Promise.reject(new Error('notutil'));
+    var Y = year9(fy), s = SELLER || {};
+    /* column order differs per table: Table 4 F..J = taxable, central, state, integrated, cess; 6 E..H and 7 D..G = central, state, integrated, cess */
+    var put4 = function (S, r, o) { S.set('F' + r, o.txv || 0); S.set('G' + r, o.cgst || 0); S.set('H' + r, o.sgst || 0); S.set('I' + r, o.igst || 0); S.set('J' + r, o.cess || 0); };
+    var put6 = function (S, r, o, c0) { var C = c0 === 'D' ? ['D', 'E', 'F', 'G'] : ['E', 'F', 'G', 'H']; S.set(C[0] + r, o.cgst || 0); S.set(C[1] + r, o.sgst || 0); S.set(C[2] + r, o.igst || 0); S.set(C[3] + r, o.cess || 0); };
+    var sum4 = function (a, b) { var o = z4(); ['igst', 'cgst', 'sgst', 'cess'].forEach(function (h) { o[h] = r2(num(a[h]) + num(b[h])); }); return o; };
+    var hsnRow = function (h) { return ['', h.hsn, String(h.desc || '').slice(0, 30), h.uqc, h.qty, h.txv, 'No', h.g, h.igst, h.cgst, h.sgst, 0, 'Add']; };
+    return book.sheet('Home').then(function (S) { S.set('B7', String(s.gstin || '').toUpperCase()); S.set('D7', fy + '-' + String(fy + 1).slice(2)); })
+      .then(function () { return book.sheet('4 Outward'); }).then(function (S) {
+        put4(S, 7, Y.T['4A']); put4(S, 8, Y.T['4B']); put4(S, 9, Y.T['4C']); put4(S, 10, Y.T['4D']); put4(S, 13, Object.assign({ txv: Y.d.txv }, Y.d)); put4(S, 16, Y.T['4I']); put4(S, 17, Y.T['4J']);
+      })
+      .then(function () { return book.sheet('5 Outward'); }).then(function (S) { S.set('D7', Y.T['5A'].txv); S.set('D8', Y.T['5B'].txv); S.set('D11', Y.c); S.set('D13', Y.e); })
+      .then(function () { return book.sheet('6 ITC availed'); }).then(function (S) {
+        put6(S, 7, ['i1', 'i2', 'i3', 'i4', 'i5'].reduce(function (a, b) { return sum4(a, Y.i[b]); }, z4()));
+        [10, 11, 12].forEach(function (r, i) { put6(S, r, Y.B6.b[i]); }); [13, 14, 15].forEach(function (r, i) { put6(S, r, Y.B6.c[i]); }); [16, 17, 18].forEach(function (r, i) { put6(S, r, Y.B6.dd[i]); });
+        put6(S, 19, Y.i.i1); put6(S, 21, Y.i.i2); put6(S, 22, Y.i.i4);
+      })
+      .then(function () { return book.sheet('7 ITC Rev'); }).then(function (S) {
+        put6(S, 13, Y.blk, 'D'); var oth = z4(); ['igst', 'cgst', 'sgst', 'cess'].forEach(function (h) { oth[h] = r2(Y.r1[h] - Y.blk[h] + Y.r2[h]); }); put6(S, 16, oth, 'D');
+      })
+      .then(function () { return book.sheet('9 Tax Paid'); }).then(function (S) {
+        var H4 = ['igst', 'cgst', 'sgst', 'cess'];
+        if (fy >= 2024) {   /* from 2024-25 the table has its own layout (rows 29-32 other than reverse charge, 34-37 reverse charge) */
+          H4.forEach(function (h, i) {
+            var r = 29 + i, u = Y.use[h]; S.set('C' + r, Y.L[h]); S.set('F' + r, u.igst || 0); S.set('G' + r, u.cgst || 0); S.set('H' + r, u.sgst || 0); S.set('I' + r, u.cess || 0);
+            S.set('L' + r, Y.left[h]); S.set('M' + r, Y.int[h]); S.set('N' + r, Y.fee[h]);
+            S.set('C' + (34 + i), Y.rcm[h]); S.set('L' + (34 + i), Y.rcm[h]);
+          });
+        } else {
+          H4.forEach(function (h, i) { var r = 7 + i, u = Y.use[h]; S.set('D' + r, r2(Y.L[h] + Y.rcm[h])); S.set('E' + r, r2(Y.left[h] + Y.rcm[h])); S.set('F' + r, u.cgst || 0); S.set('G' + r, u.sgst || 0); S.set('H' + r, u.igst || 0); S.set('I' + r, u.cess || 0); });
+          var it = r2(Y.int.igst + Y.int.cgst + Y.int.sgst + Y.int.cess), fe = r2(Y.fee.cgst + Y.fee.sgst); S.set('D11', it); S.set('E11', it); S.set('D12', fe); S.set('E12', fe);
+        }
+      })
+      .then(function () { return book.sheet('17 HSN Outward'); }).then(function (S) { S.putRows(6, Y.H17.map(hsnRow)); })
+      .then(function () { return book.sheet('18 HSN Inward'); }).then(function (S) { S.putRows(6, Y.H18.map(hsnRow)); })
+      .then(function () { return Y; });
+  }
+  function fill9Util(change) {
+    var g = (SELLER && SELLER.gstin || '').toUpperCase(), fy = (function () { var P = period(), y = +P.from.slice(0, 4), m0 = +P.from.slice(5, 7); return m0 >= 4 ? y : y - 1; })(), tp = null;
+    if (!/^\d{2}[A-Z0-9]{13}$/.test(g)) { NS.toast('Add the GSTIN of this business first (My data › Businesses).'); return; }
+    NS.xlFill.template('gstr9', change).then(function (x) {
+      tp = x; if (!tp) return;
+      NS.toast('Filling ' + tp.file.name + '…');
+      return NS.xlFill.open(tp.file).then(function (book) { return fill9(book, fy).then(function (Y) {
+        NS.xlFill.good('gstr9', tp);
+        var lab = fy + '-' + String(fy + 1).slice(2), nm = g + '_GSTR9_' + lab + ' NSBiz.xlsm';
+        return book.save(nm).then(function (bl) { return NS.xlFill.toFolder(g, 'GSTR-9 ' + lab, nm, bl); }).then(function (inF) {
+          NS.toast('Saved as "' + nm + '" (year ' + lab + ', ' + Y.n + ' returns added up).' + (inF ? ' Also saved in NSBiz › GST Returns.' : '') + ' Open it in Excel, enable macros, check every table against the portal\'s own figures, then make the upload file with the utility\'s buttons.');
+        });
+      }); });
+    }).catch(function (e) {
+      var w = e && e.message; if (/^(notutil|nosheet|notxl)$/.test(w)) NS.xlFill.bad('gstr9', tp);
+      NS.toast(w === 'notzip' ? 'Choose the zip downloaded from gst.gov.in, or the tool inside it.' : w === 'notinzip' ? 'That zip does not hold the GSTR-9 Offline Tool. Download it from gst.gov.in › Downloads › Offline Tools › GSTR-9 Offline Tool.' : w === 'notutil' || w === 'nosheet' || w === 'notxl' ? 'That file is not the GSTR-9 Offline Tool.' : 'Could not fill the tool: ' + (w || e), 'bad');
+    });
+  }
+  function showTpl() { var e = $('[data-tpl="gstr3b"]'); if (e && NS.xlFill) NS.xlFill.info('gstr3b').then(function (k) { e.textContent = k ? ' Using ' + k.name : ''; }); }
   function draw() {
     V = read();
     var P = period(), x = setoff(V), s = SELLER || {};
@@ -383,7 +586,11 @@
     form();
     /* WP-4: the set-off button next to Save, and a line saying whether this period is in the books */
     var sv0 = $('[data-do="save"]');
-    if (sv0 && !$('[data-do="post"]')) sv0.insertAdjacentHTML('afterend', '<button type="button" class="btn" data-do="post" data-i18n="ax.post">' + esc(t('ax.post')) + '</button>');   /* data-i18n: the language pack may arrive after this */
+    if (sv0 && !$('[data-do="post"]')) sv0.insertAdjacentHTML('afterend', '<button type="button" class="btn" data-do="post" data-i18n="ax.post">' + esc(t('ax.post')) + '</button>');
+    if (sv0 && !$('[data-do="util"]')) sv0.insertAdjacentHTML('beforebegin', '<button type="button" class="btn pri" data-do="util" data-ic="xls" title="Fills the official GSTR-3B Offline Utility of gst.gov.in with these figures and saves it as a new file">Fill the GST Offline Utility (Excel)</button><button type="button" class="btn sm" data-do="utilown" data-noic title="Choose a newer GSTR-3B Offline Utility downloaded from gst.gov.in">Change template file</button><span class="soft xl-tpl" data-tpl="gstr3b"></span>');
+    showTpl();
+    if (sv0 && !$('[data-do="g9"]')) sv0.insertAdjacentHTML('beforebegin', '<button type="button" class="btn" data-do="g9" data-ic="xls" title="The annual return: fills the official GSTR-9 Offline Tool for the financial year of the chosen month">Fill GSTR-9 annual (Excel)</button><button type="button" class="btn sm" data-do="g9own" data-noic>Change template file</button>');
+    if (sv0 && !$('[data-do="json"]')) sv0.insertAdjacentHTML('beforebegin', '<button type="button" class="btn pri" data-do="json" data-ic="download" title="File to upload on the GST portal (Returns › GSTR-3B › Prepare Offline)">Download JSON for the GST portal</button>');   /* data-i18n: the language pack may arrive after this */
     var sd0 = $('#g3-saved'); if (sd0 && !$('#g3-posted')) sd0.insertAdjacentHTML('afterend', '<p class="soft" id="g3-posted" aria-live="polite"></p>');
     document.addEventListener('ns-lang', function () { var b = $('[data-do="post"]'); if (b) b.textContent = t('ax.post'); showPosted(); });
     document.addEventListener('ns-lang', function () { var v = read(); form(); fill(v); drawOpen(); draw(); });   /* the language pack can arrive after the first drawing */
@@ -416,12 +623,17 @@
         NSStore.meta('gstr3b', META).then(function () { NS.toast(t('g3.saved')); load(); });
       }
       else if (d === 'post') postSetoff();
+      else if (d === 'json') saveJson();
+      else if (d === 'util') fillUtil(false);
+      else if (d === 'utilown') fillUtil(true);
+      else if (d === 'g9') fill9Util(false);
+      else if (d === 'g9own') fill9Util(true);
       else if (d === 'save') { META[ident()] = { v: read(), at: Date.now(), cfTyped: !!$$('#g3-form input[data-b="cf"].typed').length }; NSStore.meta('gstr3b', META).then(function () { NS.toast(t('g3.saved')); $('#g3-saved').textContent = t('g3.loaded', { d: new Date().toLocaleString('en-IN') }); }); }
       else if (d === 'print') window.print();
       else if (d === 'share') NS.sharePdf([NS.gstForm && NS.gstForm.inApp && $('#g3-off .off-sheet') || $('#g3-out')], 'GSTR-3B ' + ((SELLER && SELLER.gstin) || '') + ' ' + period().label, 'a4', 'GSTR-3B ' + period().label, 'GSTR-3B working ' + period().label);
     });
   }
-  if (window.NS_G3_TEST) window.NS_G3_TEST({ setoff: setoff, bills: bills, carried: carried, periodOf: periodOf, use: function (docs, meta, m2b) { DOCS = docs; META = meta || {}; M2B = m2b || {}; } });
+  if (window.NS_G3_TEST) window.NS_G3_TEST({ fillUtility: function (book, v, P, seller, s32) { return fillUtility(book, v, P, seller, s32); }, json: function (v, P, s32, seller) { S32 = s32 || []; SELLER = seller || null; return portalJson(v, P); }, setoff: setoff, bills: bills, carried: carried, periodOf: periodOf, use: function (docs, meta, m2b) { DOCS = docs; META = meta || {}; M2B = m2b || {}; } });
   if (!root) return;
   /* the official sheet: inside the App it comes first and the boxes fold under it; on the website it follows the working */
   (function offBox() {
