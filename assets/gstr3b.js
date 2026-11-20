@@ -254,6 +254,40 @@
     else d = new Date(P.y, P.to_m, D22[st] ? 22 : 24);
     return d.getDate() + ' ' + MON[d.getMonth()] + ' ' + d.getFullYear();
   }
+  /* the return as Form GSTR-3B lays it out (tables 3.1, 3.1.1, 3.2, 4, 5, 5.1, 6.1), from the boxes and the set-off on screen */
+  function official(V, P, x) {
+    var G = NS.gstForm; if (!G) return '';
+    var s = SELLER || {}, f4 = function (o) { return [o.igst || 0, o.cgst || 0, o.sgst || 0, o.cess || 0]; }, R = function (l, a) { return { cells: [l].concat(a) }; };
+    var y = P.from.slice(0, 4), fy = +P.from.slice(5, 7) >= 4 ? y + '-' + String(+y + 1).slice(2) : (+y - 1) + '-' + y.slice(2);
+    var h = G.head('FORM GSTR-3B', '[See rule 61(5)]', '', [['Year', fy], [P.q ? 'Quarter' : 'Month', P.label]], [
+      ['1.', 'GSTIN', s.gstin || ''], ['2(a).', 'Legal name of the registered person', (s.gst && s.gst.legal) || s.legal || s.name || ''], ['2(b).', 'Trade name, if any', s.name || ''], ['2(c).', 'ARN', ''], ['2(d).', 'Date of ARN', '']]);
+    var C5 = ['Nature of Supplies', 'Total Taxable value', 'Integrated Tax', 'Central Tax', 'State/UT Tax', 'Cess'];
+    var r31 = function (l, b) { var o = V[b]; return R(l, [o.txv || 0, o.igst != null ? o.igst : null, o.cgst != null ? o.cgst : null, o.sgst != null ? o.sgst : null, o.cess != null ? o.cess : null]); };
+    h += G.table('3.1', 'Details of Outward supplies and inward supplies liable to reverse charge (other than those covered by Table 3.1.1)', C5, [
+      r31('(a) Outward taxable supplies (other than zero rated, nil rated and exempted)', 'a'), r31('(b) Outward taxable supplies (zero rated)', 'b'), r31('(c) Other outward supplies (Nil rated, exempted)', 'c'),
+      r31('(d) Inward supplies (liable to reverse charge)', 'd'), r31('(e) Non-GST outward supplies', 'e')]);
+    h += G.table('3.1.1', 'Details of Supplies notified under section 9(5) of the CGST Act, 2017 and corresponding provisions in IGST/UTGST/SGST Acts', C5, [
+      R('(i) Taxable supplies on which electronic commerce operator pays tax u/s 9(5) [to be furnished by the electronic commerce operator]', [0, 0, 0, 0, 0]),
+      R('(ii) Taxable supplies made by the registered person through electronic commerce operator, on which electronic commerce operator is required to pay tax u/s 9(5) [to be furnished by the registered person making supplies through electronic commerce operator]', [0, null, null, null, null])]);
+    h += G.table('3.2', 'Of the supplies shown in 3.1 (a) and 3.1.1 (i), details of inter-State supplies made', ['Place of Supply (State/UT)', 'Total Taxable value', 'Amount of Integrated Tax'],
+      [{ sub: 'Supplies made to Unregistered Persons' }].concat(S32.map(function (z) { return R(z.pos + '-' + NS.stateName(z.pos), [z.txv, z.igst]); }), [{ sub: 'Supplies made to Composition Taxable Persons' }, { sub: 'Supplies made to UIN holders' }]));
+    var C4 = ['Details', 'Integrated Tax', 'Central Tax', 'State/UT Tax', 'Cess'];
+    var net = {}; ['igst', 'cgst', 'sgst', 'cess'].forEach(function (k) { net[k] = ['i1', 'i2', 'i3', 'i4', 'i5'].reduce(function (a, b) { return a + (V[b][k] || 0); }, 0) - (V.r1[k] || 0) - (V.r2[k] || 0); });
+    h += G.table('4.', 'Eligible ITC', C4, [{ sub: '(A) ITC Available (whether in full or part)' }, R('(1) Import of goods', f4(V.i1)), R('(2) Import of services', f4(V.i2)), R('(3) Inward supplies liable to reverse charge (other than 1 & 2 above)', f4(V.i3)),
+      R('(4) Inward supplies from ISD', f4(V.i4)), R('(5) All other ITC', f4(V.i5)), { sub: '(B) ITC Reversed' }, R('(1) As per rules 38, 42 & 43 of CGST Rules and section 17(5)', f4(V.r1)), R('(2) Others', f4(V.r2)),
+      { cells: ['(C) Net ITC available (A) - (B)'].concat(f4(net)), tot: 1 }, { sub: '(D) Other Details' }, R('(1) ITC reclaimed which was reversed under Table 4(B)(2) in earlier tax period', f4(V.d1)),
+      R('(2) Ineligible ITC under section 16(4) & ITC restricted due to PoS rules', f4(V.d2))]);
+    h += G.table('5.', 'Values of exempt, nil-rated and non-GST inward supplies', ['Nature of supplies', 'Inter-State supplies', 'Intra-State supplies'], [
+      R('From a supplier under composition scheme, Exempt and Nil rated supply', [V.x1.inter, V.x1.intra]), R('Non GST supply', [V.x2.inter, V.x2.intra])]);
+    h += G.table('5.1', 'Interest & late fee payable', C4, [R('Interest', f4(V.int)), R('Late Fees', [null, V.fee.cgst || 0, V.fee.sgst || 0, null])]);
+    var H6 = ['Description', 'Tax payable', 'Paid through ITC: Integrated Tax', 'Central Tax', 'State/UT Tax', 'Cess', 'Tax paid in cash', 'Interest paid in cash', 'Late fee paid in cash'];
+    var row6 = function (l, k) { var u = x.use[k] || {}; return R(l, [x.L[k] || 0, u.igst || 0, u.cgst || 0, u.sgst || 0, u.cess || 0, Math.max(0, x.left[k] || 0), V.int[k] || 0, V.fee[k] || 0]); };
+    var rc6 = function (l, k) { return R(l, [x.rcm[k] || 0, null, null, null, null, x.rcm[k] || 0, null, null]); };
+    h += G.table('6.1', 'Payment of tax', H6, [{ sub: '(A) Other than reverse charge' }, row6('Integrated Tax', 'igst'), row6('Central Tax', 'cgst'), row6('State/UT Tax', 'sgst'), row6('Cess', 'cess'),
+      { sub: '(B) Reverse charge' }, rc6('Integrated Tax', 'igst'), rc6('Central Tax', 'cgst'), rc6('State/UT Tax', 'sgst'), rc6('Cess', 'cess')]);
+    h += G.verify() + G.note('Prepared in NSBiz from your saved bills and the boxes above. File the return on the GST portal (Returns › GSTR-3B); the portal fills some tables itself from GSTR-1 and GSTR-2B.');
+    return G.wrap(h);
+  }
   function draw() {
     V = read();
     var P = period(), x = setoff(V), s = SELLER || {};
@@ -277,6 +311,7 @@
       (x.C.igst < 0 || x.C.cgst < 0 || x.C.sgst < 0 ? '<p class="callout">' + esc(t('g3.w.neg')) + '</p>' : '') +
       '<p class="soft g3-print-boxes">' + esc(t('g3.note')) + '</p>';
     $('#g3-out').innerHTML = h;
+    var off = $('#g3-off'); if (off) off.innerHTML = official(V, P, x);
     $('#g3-boxes').innerHTML = GROUPS.map(function (g) { return '<b>' + esc(t(g[0])) + '</b>: ' + g[1].map(function (id) { var b = BOX.filter(function (z) { return z[0] === id; })[0]; return esc(t('g3.b.' + id)) + ' ' + b[1].map(function (hh) { return m(V[id][hh]); }).join(' / '); }).join('; '); }).join('<br>');
   }
   /* the working behind the automatic 4(A), 4(B) and 4(D) figures (S-5, S-6, S-7) */
@@ -383,10 +418,16 @@
       else if (d === 'post') postSetoff();
       else if (d === 'save') { META[ident()] = { v: read(), at: Date.now(), cfTyped: !!$$('#g3-form input[data-b="cf"].typed').length }; NSStore.meta('gstr3b', META).then(function () { NS.toast(t('g3.saved')); $('#g3-saved').textContent = t('g3.loaded', { d: new Date().toLocaleString('en-IN') }); }); }
       else if (d === 'print') window.print();
-      else if (d === 'share') NS.sharePdf([$('#g3-out')], 'GSTR-3B ' + ((SELLER && SELLER.gstin) || '') + ' ' + period().label, 'a4', 'GSTR-3B ' + period().label, 'GSTR-3B working ' + period().label);
+      else if (d === 'share') NS.sharePdf([NS.gstForm && NS.gstForm.inApp && $('#g3-off .off-sheet') || $('#g3-out')], 'GSTR-3B ' + ((SELLER && SELLER.gstin) || '') + ' ' + period().label, 'a4', 'GSTR-3B ' + period().label, 'GSTR-3B working ' + period().label);
     });
   }
   if (window.NS_G3_TEST) window.NS_G3_TEST({ setoff: setoff, bills: bills, carried: carried, periodOf: periodOf, use: function (docs, meta, m2b) { DOCS = docs; META = meta || {}; M2B = m2b || {}; } });
   if (!root) return;
+  /* the official sheet: inside the App it comes first and the boxes fold under it; on the website it follows the working */
+  (function offBox() {
+    var tool = $('#g3'), grid = tool && $('.g3-grid', tool); if (!grid || $('#g3-off')) return;
+    var d = document.createElement('section'); d.id = 'g3-off'; d.className = 'off-box'; d.setAttribute('aria-label', 'Form GSTR-3B');
+    if (NS.gstForm && NS.gstForm.inApp) { grid.parentNode.insertBefore(d, grid); NS.gstForm.fold(grid); } else grid.parentNode.insertBefore(d, grid.nextSibling);
+  })();
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
 })();
